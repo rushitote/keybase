@@ -7,14 +7,14 @@ import (
 	"github.com/edsrzf/mmap-go"
 )
 
-type Entry struct {
+type entry struct {
 	key       string
 	value     string
 	isDeleted bool // isDeleted is true if the entry is a delete marker
 }
 
 type Memtable struct {
-	entries map[string]Entry // Map of key to entry
+	entries map[string]entry // Map of key to entry
 	curSize int              // Current size of the memtable
 	maxSize int              // Maximum size of the memtable in bytes
 
@@ -24,7 +24,7 @@ type Memtable struct {
 
 func NewMemtable(maxSize int, filePath string) (*Memtable, error) {
 	m := Memtable{
-		entries:  make(map[string]Entry),
+		entries:  make(map[string]entry),
 		curSize:  0,
 		maxSize:  maxSize,
 		filePath: filePath,
@@ -61,11 +61,11 @@ func (m *Memtable) InitMemtable() error {
 		valueLen := binary.BigEndian.Uint64(mmmap[i+4+int(keyLen) : i+4+int(keyLen)+8])
 
 		if valueLen == keyDeleteNum {
-			m.entries[key] = Entry{key, "", true}
+			m.entries[key] = entry{key, "", true}
 			valueLen = 0
 		} else {
 			value := string(mmmap[i+4+int(keyLen)+8 : i+4+int(keyLen)+8+int(valueLen)])
-			m.entries[key] = Entry{key, value, false}
+			m.entries[key] = entry{key, value, false}
 		}
 
 		i += 4 + int(keyLen) + 8 + int(valueLen)
@@ -76,7 +76,7 @@ func (m *Memtable) InitMemtable() error {
 }
 
 func (m *Memtable) Put(key string, value string) error {
-	m.entries[key] = Entry{key, value, false}
+	m.entries[key] = entry{key, value, false}
 	m.curSize += len(key) + len(value)
 
 	keyLen := make([]byte, 4)
@@ -111,7 +111,7 @@ func (m *Memtable) Get(key string) (string, bool) {
 }
 
 func (m *Memtable) Delete(key string) error {
-	m.entries[key] = Entry{key, "", true}
+	m.entries[key] = entry{key, "", true}
 	m.curSize += len(key)
 
 	keyLen := make([]byte, 4)
@@ -136,7 +136,7 @@ func (m *Memtable) Delete(key string) error {
 
 // Clear removes all entries from the memtable and the log file
 func (m *Memtable) Clear() error {
-	m.entries = make(map[string]Entry)
+	m.entries = make(map[string]entry)
 	m.curSize = 0
 
 	if err := m.f.Truncate(0); err != nil {
