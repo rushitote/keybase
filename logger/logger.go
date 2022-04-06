@@ -1,6 +1,9 @@
 package logger
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 type Level uint8
 
@@ -27,10 +30,10 @@ type Logger struct {
 	maxLevel Level
 }
 
-func NewLogger(maxLevel Level) (*Logger, error) {
-	return &Logger{
+func NewLogger(maxLevel Level) Logger {
+	return Logger{
 		maxLevel: maxLevel,
-	}, nil
+	}
 }
 
 func (l *Logger) log(level Level, msg string) {
@@ -39,14 +42,14 @@ func (l *Logger) log(level Level, msg string) {
 	}
 }
 
-func (l *Logger) Debug(msg string) {
-	l.log(DEBUG, msg)
+func (l *Logger) Debug(msg ...string) {
+	l.log(DEBUG, strings.Join(msg, " "))
 }
 
-func (l *Logger) Info(msg string) {
-	l.log(INFO, msg)
+func (l *Logger) Info(msg ...string) {
+	l.log(INFO, strings.Join(msg, " "))
 }
 
-func (l *Logger) Warn(msg string) {
-	l.log(WARN, msg)
+func (l *Logger) Warn(msg ...string) {
+	l.log(WARN, strings.Join(msg, " "))
 }
