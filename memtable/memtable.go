@@ -3,6 +3,7 @@ package memtable
 import (
 	"encoding/binary"
 	"os"
+	"sort"
 	"sync"
 
 	"github.com/edsrzf/mmap-go"
@@ -177,15 +178,21 @@ func (m *Memtable) Clear() error {
 	return nil
 }
 
-func (m *Memtable) ToSlice() []MemEntry {
+func (m *Memtable) GetSortedEntries() []MemEntry {
 	m.RW.Lock()
 	defer m.RW.Unlock()
 
 	entries := make([]MemEntry, 0)
+
 	m.Entries.Range(func(key, value interface{}) bool {
 		entries = append(entries, value.(MemEntry))
 		return true
 	})
+
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].Key < entries[j].Key
+	})
+
 	return entries
 }
 

@@ -1,8 +1,7 @@
 package table
 
 import (
-	"encoding/binary"
-	"sort"
+	"os"
 
 	"github.com/edsrzf/mmap-go"
 	"github.com/rushitote/keybase/config"
@@ -23,95 +22,98 @@ type TableSet struct {
 func NewTableSet(conf *config.Options) *TableSet {
 	return &TableSet{
 		list:     []Table{},
-		maxLevel: -1,
+		maxLevel: 0,
 		conf:     conf,
 	}
 }
 
 func (ts *TableSet) CompactMemtable(m *memtable.Memtable) error {
-	if ts.maxLevel < 0 {
-		tbl, err := NewTable(util.GetLevelPath(ts.conf, 0), uint64(ts.conf.L0Size))
-		if err != nil {
+	if ts.maxLevel == 0 {
+		if err := ts.AddL1Table(); err != nil {
 			return err
 		}
-		ts.list = []Table{*tbl}
-		ts.maxLevel = 0
 	}
 
-	entries := m.ToSlice()
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].Key < entries[j].Key
-	})
-
-	// start comparing L0 and memtable using two pointers
-	// and put the values as they go in a temp table
-	// then rename the temp table to L0
-	// and now check if L0 > maxSize
-
-	i := 0 // index of the next memtable entry to read
-	j := 0 // offset of the next L0 entry to read
-
-	mmapFile, err := mmap.Map(ts.list[0].File, mmap.RDWR, 0)
-	if err != nil {
+	entries := m.GetSortedEntries()
+	if err := ts.MergeMemtableToL1(entries); err != nil {
 		return err
-	}
-
-	newL0Table, err := NewTable(util.GetLevelPath(ts.conf, 0, true), uint64(ts.conf.L0Size))
-	if err != nil {
-		return err
-	}
-
-	for i < len(entries) && j < int(ts.list[0].CurrSize) {
-		memKey := entries[i].Key
-		keyLen := binary.BigEndian.Uint32(mmapFile[j : j+4])
-		L0key := string(mmapFile[j+4 : j+4+int(keyLen)])
-
-		if L0key < memKey {
-			valueLen, err := writeL0EntryToNewTable(newL0Table, keyLen, L0key, mmapFile, j)
-			if err != nil {
-				return err
-			}
-
-			j += util.IncrementFileOffset(keyLen, valueLen)
-		} else if L0key > memKey {
-			
-		} else {
-
-		}
 	}
 
 	return nil
 }
 
-func writeL0EntryToNewTable(newL0Table *Table, keyLen uint32, L0key string, mmapFile mmap.MMap, j int) (uint64, error) {
-	newL0Table.CurrSize += 4 + uint64(keyLen) + 8
+func (ts *TableSet) AddL1Table() error {
+	tbl, err := NewTable(util.GetLevelPath(ts.conf, 1), uint64(ts.conf.L1Size))
+	if err != nil {
+		return err
+	}
+	ts.list = []Table{*tbl}
+	ts.maxLevel = 1
+	return nil
+}
 
-	keyLenByteArray := make([]byte, 4)
-	binary.BigEndian.PutUint32(keyLenByteArray, keyLen)
+/*
+	- Entries on file will be of form:
+	| hashed key (8B) | key size (4B) | key | value size (4B) | value |
+*/
 
-	if _, err := newL0Table.File.Write(keyLenByteArray); err != nil {
-		return 0, err
+func (ts *TableSet) MergeMemtableToL1(entries []memtable.MemEntry) error {
+	L1Table := ts.list[0]
+
+	oldFileMmap, err := mmap.Map(L1Table.File, mmap.RDWR, 0)
+	if err != nil {
+		return err
 	}
 
-	if _, err := newL0Table.File.WriteString(L0key); err != nil {
-		return 0, err
+	newFile, err := os.OpenFile(util.GetLevelPath(ts.conf, 1, true), os.O_APPEND|os.O_RDWR|os.O_CREATE, 0600)
+	if err != nil {
+		return err
 	}
 
-	valueLen := binary.BigEndian.Uint64(mmapFile[j+4+int(keyLen) : j+4+int(keyLen)+8])
+	oldFileIndex := uint64(0) // index of the entry to read in the old file
+	memIndex := 0             // index of the entry to read in the memtable
 
-	valueLenByteArray := make([]byte, 8)
-	binary.BigEndian.PutUint64(valueLenByteArray, valueLen)
+	// compare memtable entries with the old file entries and merge them
+	// if keys are same, use the value from the memtable since it is newer
+	for oldFileIndex < uint64(len(oldFileMmap)) && memIndex < len(entries) {
+		keyLen := util.GetKeySizeOfNextEntry(&oldFileMmap, oldFileIndex+8)
+		key := util.GetKeyOfNextEntry(&oldFileMmap, oldFileIndex+12, uint64(keyLen))
 
-	if _, err := newL0Table.File.Write(valueLenByteArray); err != nil {
-		return 0, err
-	}
+		if key < entries[memIndex].Key {
+			valueLen := util.GetValueSizeOfNextEntry(&oldFileMmap, oldFileIndex+12+uint64(keyLen))
+			value := make([]byte, 0)
 
-	if valueLen != memtable.KeyDeleteNum {
-		newL0Table.CurrSize += (valueLen)
-		value := mmapFile[j+4+int(keyLen)+8 : j+4+int(keyLen)+8+int(valueLen)]
-		if _, err := newL0Table.File.Write(value); err != nil {
-			return 0, err
+			oldFileIndex += 12 + uint64(keyLen) + 8
+
+			if valueLen != memtable.KeyDeleteNum {
+				value = util.GetValueOfNextEntry(&oldFileMmap, oldFileIndex+12+uint64(keyLen)+8, valueLen)
+				oldFileIndex += uint64(valueLen)
+			}
+
+			util.WriteEntryToFile(newFile, keyLen, key, valueLen, value)
+
+		} else if key == entries[memIndex].Key {
+			valueLen := len(entries[memIndex].Value)
+			value := []byte(entries[memIndex].Value)
+
+			util.WriteEntryToFile(newFile, keyLen, key, uint64(valueLen), value)
+
+			oldFileIndex += 12 + uint64(keyLen) + 8
+
+			oldFileValueLen := util.GetValueSizeOfNextEntry(&oldFileMmap, oldFileIndex)
+			if oldFileValueLen != memtable.KeyDeleteNum {
+				oldFileIndex += uint64(oldFileValueLen)
+			}
+
+			memIndex++
+
+		} else {
+			valueLen := len(entries[memIndex].Value)
+			value := []byte(entries[memIndex].Value)
+
+			util.WriteEntryToFile(newFile, keyLen, key, uint64(valueLen), value)
+
+			memIndex++
 		}
 	}
-	return valueLen, nil
 }

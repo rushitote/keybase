@@ -74,7 +74,7 @@ func TestToSlice(t *testing.T) {
 	m.Delete("key2")
 	m.Put("key3", "new_value")
 
-	entries := m.ToSlice()
+	entries := m.GetSortedEntries()
 	is.Equal(len(entries), 3)
 
 	sort.Slice(entries, func(i, j int) bool {
