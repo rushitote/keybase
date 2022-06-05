@@ -116,4 +116,6 @@ func (ts *TableSet) MergeMemtableToL1(entries []memtable.MemEntry) error {
 			memIndex++
 		}
 	}
+
+	return nil
 }
